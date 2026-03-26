@@ -858,14 +858,14 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
     const kinTriggerData = kinFileResult[kinTrigColIdx];
     const kinAngleDataRaw = kinFileResult[kinAngleColIdx];
 
-    // 1. 尋找 KINEMATIC 檔案中的 Trigger 點 ( > 3V )
+    // 1. 尋找 KINEMATIC 檔案中的 Trigger 點 ( > 3V ) 作為 t=0
     let kinTrigIdx = -1;
     for (let i = 0; i < kinTriggerData.length; i++) {
-      if (kinTriggerData[i] > trigThresh) { kinTrigIdx = i; break; }
+      if (kinTriggerData[i] >= trigThresh) { kinTrigIdx = i; break; }
     }
     if (kinTrigIdx === -1) { setErrorMessage(`Kinematic 同步失敗：找不到大於 ${trigThresh} 的 Trigger 訊號。`); return; }
 
-    // 2. 尋找 EMG 檔案中的 Time=0 點作為同步起點 ( 跨越 0 )
+    // 2. 尋找 EMG 檔案中的 Time=0 點作為同步起點 ( 跨越 0 ) 作為 t=0
     let emgTrigIdx = -1;
     const emgTimeColIdx = emgHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
     if (emgTimeColIdx !== -1) {
@@ -877,7 +877,6 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
             }
         }
     }
-    
     // 如果 EMG 檔案沒有 Time 欄位，退回相對頻率推算
     if (emgTrigIdx === -1 || emgTrigIdx === 0) {
         emgTrigIdx = Math.round((kinTrigIdx / kinSR) * emgSR);
@@ -968,11 +967,11 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
 
     const chartData = [];
     for (let i = 0; i < kinAngleData.length; i++) {
-      const t = (i - kinTrigIdx) / kinSR;
-      const matchingEmgIdx = emgTrigIdx + Math.round(t * emgSR);
+      const relT = (i - kinTrigIdx) / kinSR;
+      const matchingEmgIdx = emgTrigIdx + Math.round(relT * emgSR);
       
       const point = {
-        time: Math.round(t * 1000) / 1000,
+        time: Math.round(relT * 1000) / 1000,
         angleMain: Math.round(kinAngleData[i] * 100) / 100
       };
 
@@ -1498,7 +1497,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       const kinHTElevData = removeSpikes(kinHTElevDataRaw, kinSpikeThresh);
       const kinHTPlaneData = removeSpikes(kinHTPlaneDataRaw, kinSpikeThresh);
 
-      // 1. KINEMATIC Trigger (t=0 基準點)
+      // 1. 尋找 KINEMATIC 系統絕對起點 (t = 0)
       let kinTrigIdx = -1;
       for (let i = 0; i < kinTriggerData.length; i++) {
         if (kinTriggerData[i] > trigThresh) {
@@ -1510,7 +1509,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         throw new Error(`KIN 同步失敗：找不到大於 ${trigThresh} 的 Trigger 訊號。`);
       }
 
-      // 2. EMG Trigger (t=0 基準點) - 尋找 Time,s 欄位跨越 0 的列數
+      // 2. 尋找 EMG 系統絕對起點 (t = 0) - 尋找 Time, s 跨越 0 的列數
       let emgTrigIdx = -1;
       const emgTimeColIdx = emgHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
       if (emgTimeColIdx !== -1) {
@@ -1523,7 +1522,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
           }
       }
       
-      // 終極備案：若無 Time 欄位，才退回頻率推算
+      // 若無 Time 欄位，才退回頻率推算
       if (emgTrigIdx === -1 || emgTrigIdx === 0) {
           emgTrigIdx = Math.round((kinTrigIdx / kinSR) * emgSR);
       }
@@ -1559,7 +1558,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       if (idxKinMinPlane === -1) throw new Error("找不到「最小肩水平面角度」點！");
       const tMinPlane = (idxKinMinPlane - kinTrigIdx) / kinSR;
 
-      // 3. 在 EMG/HandCourse 陣列中尋找擊球點 (Impact)
+      // 3. 尋找擊球點 (Impact)
       const handCourseStartSearchIdx = emgTrigIdx + Math.round(tMinPlane * emgSR);
       if (handCourseStartSearchIdx < 0 || handCourseStartSearchIdx >= emgHandCourseData.length) {
         throw new Error(`尋找擊球點失敗：時間超出 Hand Course 數據長度。`);
@@ -1629,7 +1628,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       for (let i = drawKinStartIdx; i <= drawKinEndIdx; i++) {
         const t = (i - kinTrigIdx) / kinSR; 
 
-        // 透過相對時間 t 進行精準對齊
+        // 透過相對時間 t 進行雙對齊
         const matchingEmgIdx = emgTrigIdx + Math.round(t * emgSR);
         
         const dataPoint = {
