@@ -86,22 +86,14 @@ const biquadFilter = (data, type, cutoff, sampleRate) => {
   return output;
 };
 
-// 🌟 升級：零相位位移濾波器 (Zero-Lag / Forward-Backward Filter)
-// 確保濾波後的肌肉訊號與 Kinematics 發生時間點「完全不會有時間延遲 (Phase Shift)」
+// 零相位位移濾波器 (Zero-Lag / Forward-Backward Filter)
 const zeroLagBiquadFilter = (data, type, cutoff, sampleRate) => {
-  // 1. 正向濾波 (Forward)
   const forward = biquadFilter(data, type, cutoff, sampleRate);
-  
-  // 2. 陣列反轉
   const reversed = new Float64Array(forward.length);
   for (let i = 0; i < forward.length; i++) {
     reversed[i] = forward[forward.length - 1 - i];
   }
-  
-  // 3. 反向濾波 (Backward)
   const backward = biquadFilter(reversed, type, cutoff, sampleRate);
-  
-  // 4. 再次反轉回正確時序
   const finalOut = new Float64Array(backward.length);
   for (let i = 0; i < backward.length; i++) {
     finalOut[i] = backward[backward.length - 1 - i];
@@ -109,11 +101,9 @@ const zeroLagBiquadFilter = (data, type, cutoff, sampleRate) => {
   return finalOut;
 };
 
-// 🌟 升級：嚴格帶通濾波器 (20 ~ 450Hz) - 套用 Zero-Lag 確保不失真
+// 帶通濾波器
 const bandpassFilter = (data, hpCutoff = 20, lpCutoff = 450, sampleRate = 1000) => {
-  // 先過 High-Pass (20Hz) 去除動作干擾與 ECG
   const hpFiltered = zeroLagBiquadFilter(data, 'highpass', hpCutoff, sampleRate);
-  // 再過 Low-Pass (450Hz) 去除環境高頻雜訊
   return zeroLagBiquadFilter(hpFiltered, 'lowpass', lpCutoff, sampleRate);
 };
 
@@ -812,16 +802,14 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
     return { i30_up, i60_up, i90_up, i120_up, i120_down, i90_down, i60_down, i30_down };
   };
 
-  const generateMetricsForCycle = (cycle, emgDataArrays, kinDataArrays, kinTrigIdx, emgTrigIdx, localKinSR, localEmgSR, trigTimeAbsolute, emgTimeColIdx, kinTimeColIdx) => {
+  const generateMetricsForCycle = (cycle, emgDataArrays, kinDataArrays, kinTrigIdx, emgTrigIdx, localKinSR, localEmgSR) => {
     
-    const getEmgIdx = (t) => emgTimeColIdx !== -1 
-      ? emgTrigIdx + Math.round((t - trigTimeAbsolute) * localEmgSR)
-      : emgTrigIdx + Math.round((t - trigTimeAbsolute) * localEmgSR);
+    const getEmgIdx = (t) => emgTrigIdx + Math.round(t * localEmgSR);
 
     const calcEmgSegment = (rmsArr, sIdx, eIdx) => {
       if (sIdx === null || eIdx === null || sIdx >= eIdx) return '';
-      const tStart = kinTimeColIdx !== -1 ? kinFileResult[kinTimeColIdx][sIdx] : (sIdx / localKinSR);
-      const tEnd = kinTimeColIdx !== -1 ? kinFileResult[kinTimeColIdx][eIdx] : (eIdx / localKinSR);
+      const tStart = (sIdx - kinTrigIdx) / localKinSR;
+      const tEnd = (eIdx - kinTrigIdx) / localKinSR;
       
       const emgStart = Math.max(0, getEmgIdx(tStart));
       const emgEnd = Math.min(rmsArr.length - 1, getEmgIdx(tEnd));
@@ -870,31 +858,28 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
     const kinTriggerData = kinFileResult[kinTrigColIdx];
     const kinAngleDataRaw = kinFileResult[kinAngleColIdx];
 
+    // 1. 尋找 KINEMATIC 檔案中的 Trigger 點 ( > 3V )
     let kinTrigIdx = -1;
     for (let i = 0; i < kinTriggerData.length; i++) {
-      if (kinTriggerData[i] >= trigThresh) { kinTrigIdx = i; break; }
+      if (kinTriggerData[i] > trigThresh) { kinTrigIdx = i; break; }
     }
     if (kinTrigIdx === -1) { setErrorMessage(`Kinematic 同步失敗：找不到大於 ${trigThresh} 的 Trigger 訊號。`); return; }
 
-    const findTimeCol = (headers) => headers.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
-    const kinTimeColIdx = findTimeCol(kinHeaders);
-    const emgTimeColIdx = findTimeCol(emgHeaders);
-
-    const timeAt = (idx) => kinTimeColIdx !== -1 ? kinFileResult[kinTimeColIdx][idx] : (idx / kinSR);
-    const trigTimeAbsolute = timeAt(kinTrigIdx);
-
-    let emgTrigIdx = 0;
+    // 2. 尋找 EMG 檔案中的 Time=0 點作為同步起點 ( 跨越 0 )
+    let emgTrigIdx = -1;
+    const emgTimeColIdx = emgHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
     if (emgTimeColIdx !== -1) {
-        let minDiff = Infinity;
         const emgTimeData = emgFileResult[emgTimeColIdx];
-        for(let i = 0; i < emgTimeData.length; i++) {
-            const diff = Math.abs(emgTimeData[i] - trigTimeAbsolute);
-            if (diff < minDiff) {
-                minDiff = diff;
+        for (let i = 0; i < emgTimeData.length; i++) {
+            if (emgTimeData[i] >= 0) { 
                 emgTrigIdx = i;
+                break;
             }
         }
-    } else {
+    }
+    
+    // 如果 EMG 檔案沒有 Time 欄位，退回相對頻率推算
+    if (emgTrigIdx === -1 || emgTrigIdx === 0) {
         emgTrigIdx = Math.round((kinTrigIdx / kinSR) * emgSR);
     }
 
@@ -937,9 +922,9 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
           startIdx: currentStartIdx, 
           peakIdx: peakIdx, 
           endIdx: endIdx,
-          tStart: Number(timeAt(currentStartIdx).toFixed(3)),
-          tPeak: Number(timeAt(peakIdx).toFixed(3)),
-          tEnd: Number(timeAt(endIdx).toFixed(3)),
+          tStart: +( (currentStartIdx - kinTrigIdx) / kinSR ).toFixed(3),
+          tPeak: +( (peakIdx - kinTrigIdx) / kinSR ).toFixed(3),
+          tEnd: +( (endIdx - kinTrigIdx) / kinSR ).toFixed(3),
         });
       } else break; 
       
@@ -954,7 +939,6 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
       if (colIdx === -1) colIdx = Math.min(idx, emgFileResult.length - 1);
 
       const emgData = emgFileResult[colIdx];
-      // 確保順序：20~450Hz Bandpass (Zero-Lag) -> Rectify -> Zero-Lag LPF
       const filtered = bandpassFilter(emgData, bpHigh, bpLow, emgSR);
       const rectified = new Float64Array(filtered.length);
       for(let i = 0; i < filtered.length; i++) rectified[i] = Math.abs(filtered[i]);
@@ -971,25 +955,24 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
 
     const processedCycles = detectedCycles.map(cycle => {
       cycle.indices = recalculateCycleIndices(cycle.startIdx, cycle.peakIdx, cycle.endIdx, kinAngleData);
-      const metrics = generateMetricsForCycle(cycle, emgDataArrays, kinDataArrays, kinTrigIdx, emgTrigIdx, kinSR, emgSR, trigTimeAbsolute, emgTimeColIdx, kinTimeColIdx);
+      const metrics = generateMetricsForCycle(cycle, emgDataArrays, kinDataArrays, kinTrigIdx, emgTrigIdx, kinSR, emgSR);
       
       return {
         ...cycle,
         emgMetrics: metrics.emgMetrics,
         kinMetrics: metrics.kinMetrics,
         maxAngle: kinAngleData[cycle.peakIdx].toFixed(1),
-        duration: +( (timeAt(cycle.endIdx) - timeAt(cycle.startIdx)) ).toFixed(2)
+        duration: +( (cycle.endIdx - cycle.startIdx) / kinSR ).toFixed(2)
       };
     });
 
     const chartData = [];
     for (let i = 0; i < kinAngleData.length; i++) {
-      const currentAbsTime = timeAt(i);
-      const relativeTime = currentAbsTime - trigTimeAbsolute;
-      const matchingEmgIdx = emgTrigIdx + Math.round(relativeTime * emgSR);
+      const t = (i - kinTrigIdx) / kinSR;
+      const matchingEmgIdx = emgTrigIdx + Math.round(t * emgSR);
       
       const point = {
-        time: Math.round(currentAbsTime * 1000) / 1000,
+        time: Math.round(t * 1000) / 1000,
         angleMain: Math.round(kinAngleData[i] * 100) / 100
       };
 
@@ -1012,9 +995,6 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
       emgTrigIdx,
       emgDataArrays,
       kinDataArrays,
-      trigTimeAbsolute,
-      emgTimeColIdx,
-      kinTimeColIdx,
       kinAngleData 
     });
   };
@@ -1079,8 +1059,7 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
       const newCycles = [...analysisResult.cycles];
       const cycle = { ...newCycles[selectedRepIdx] };
       
-      const relativeTime = time - analysisResult.trigTimeAbsolute;
-      const idx = Math.max(0, analysisResult.kinTrigIdx + Math.round(relativeTime * kinSR));
+      const idx = Math.max(0, analysisResult.kinTrigIdx + Math.round(time * kinSR));
       const maxIdx = kinFileResult[kinAngleColIdx].length - 1;
 
       if (draggingMarker === 'start') { if (idx < cycle.peakIdx) { cycle.startIdx = Math.max(0, idx); cycle.tStart = time; } } 
@@ -1088,7 +1067,7 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
       else if (draggingMarker === 'end') { if (idx > cycle.peakIdx) { cycle.endIdx = Math.min(maxIdx, idx); cycle.tEnd = time; } }
       
       cycle.indices = recalculateCycleIndices(cycle.startIdx, cycle.peakIdx, cycle.endIdx, analysisResult.kinAngleData);
-      const metrics = generateMetricsForCycle(cycle, analysisResult.emgDataArrays, analysisResult.kinDataArrays, analysisResult.kinTrigIdx, analysisResult.emgTrigIdx, kinSR, emgSR, analysisResult.trigTimeAbsolute, analysisResult.emgTimeColIdx, analysisResult.kinTimeColIdx);
+      const metrics = generateMetricsForCycle(cycle, analysisResult.emgDataArrays, analysisResult.kinDataArrays, analysisResult.kinTrigIdx, analysisResult.emgTrigIdx, kinSR, emgSR);
       
       cycle.emgMetrics = metrics.emgMetrics;
       cycle.kinMetrics = metrics.kinMetrics;
@@ -1311,7 +1290,7 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
                         <XAxis dataKey="time" type="number" domain={['dataMin', 'dataMax']} tick={{fontSize: 10}} label={{value:'Time (s)', position:'insideBottom', offset:-5, fontSize:10}} />
                         <YAxis domain={['auto', 'auto']} tick={{fontSize: 10}} width={40} />
                         <Tooltip contentStyle={{fontSize:'12px'}} labelFormatter={(l)=>`Time: ${l}s`} />
-                        <ReferenceLine x={analysisResult.trigTimeAbsolute} stroke="#94a3b8" strokeWidth={1.5} label={{value:'Trigger', position:'insideBottomLeft', fill:'#94a3b8', fontSize:10}} />
+                        <ReferenceLine x={0} stroke="#94a3b8" strokeWidth={1.5} label={{value:'Trigger (t=0)', position:'insideBottomLeft', fill:'#94a3b8', fontSize:10}} />
                         {analysisResult.cycles.flatMap((cycle, idx) => {
                           const elements = [];
                           if (selectedRepIdx === idx) {
@@ -1441,11 +1420,9 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
     reader.readAsText(file);
   };
 
-  const generateServeMetrics = (events, emgDataArrays, localKinFileResult, localKinHeaders, kinTrigIdx, localKinSR, localEmgSR, emgTrigIdx, trigTimeAbsolute, emgTimeColIdx, kinTimeColIdx) => {
+  const generateServeMetrics = (events, emgDataArrays, localKinFileResult, localKinHeaders, kinTrigIdx, localKinSR, localEmgSR, emgTrigIdx) => {
     
-    const getEmgIdx = (t) => emgTimeColIdx !== -1 
-      ? emgTrigIdx + Math.round((t - trigTimeAbsolute) * localEmgSR)
-      : emgTrigIdx + Math.round((t - trigTimeAbsolute) * localEmgSR);
+    const getEmgIdx = (t) => emgTrigIdx + Math.round(t * localEmgSR);
 
     const calcPhaseMetrics = (rmsArr, startT, endT) => {
       const sIdx = Math.max(0, getEmgIdx(startT));
@@ -1460,7 +1437,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       return {
         mean: (sum / (eIdx - sIdx)).toFixed(4),
         peak: peak.toFixed(4),
-        peakTime: (trigTimeAbsolute + (peakIdx - emgTrigIdx) / localEmgSR).toFixed(3)
+        peakTime: ((peakIdx - emgTrigIdx) / localEmgSR).toFixed(3)
       };
     };
 
@@ -1474,9 +1451,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       }
     }));
 
-    const getKinIdx = (t) => kinTimeColIdx !== -1 
-      ? kinTrigIdx + Math.round((t - trigTimeAbsolute) * localKinSR)
-      : kinTrigIdx + Math.round((t - trigTimeAbsolute) * localKinSR);
+    const getKinIdx = (t) => kinTrigIdx + Math.round(t * localKinSR);
 
     const kinIndicesToExtract = {
       'Start': getKinIdx(events.start),
@@ -1523,7 +1498,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
       const kinHTElevData = removeSpikes(kinHTElevDataRaw, kinSpikeThresh);
       const kinHTPlaneData = removeSpikes(kinHTPlaneDataRaw, kinSpikeThresh);
 
-      // 1. 尋找 KINEMATIC 系統絕對起點
+      // 1. KINEMATIC Trigger (t=0 基準點)
       let kinTrigIdx = -1;
       for (let i = 0; i < kinTriggerData.length; i++) {
         if (kinTriggerData[i] > trigThresh) {
@@ -1535,27 +1510,21 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         throw new Error(`KIN 同步失敗：找不到大於 ${trigThresh} 的 Trigger 訊號。`);
       }
 
-      // 尋找真實物理時間欄位以校正 EMG Offset
-      const findTimeCol = (headers) => headers.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
-      const kinTimeColIdx = findTimeCol(kinHeaders);
-      const emgTimeColIdx = findTimeCol(emgHeaders);
-
-      const timeAt = (idx) => kinTimeColIdx !== -1 ? kinFileResult[kinTimeColIdx][idx] : (idx / kinSR);
-      const trigTimeAbsolute = timeAt(kinTrigIdx);
-
-      // 去 EMG 檔案尋找同樣真實物理時間的 Index
-      let emgTrigIdx = 0;
+      // 2. EMG Trigger (t=0 基準點) - 尋找 Time,s 欄位跨越 0 的列數
+      let emgTrigIdx = -1;
+      const emgTimeColIdx = emgHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z]/g, '').includes('time'));
       if (emgTimeColIdx !== -1) {
-          let minDiff = Infinity;
           const emgTimeData = emgFileResult[emgTimeColIdx];
-          for(let i = 0; i < emgTimeData.length; i++) {
-              const diff = Math.abs(emgTimeData[i] - trigTimeAbsolute);
-              if (diff < minDiff) {
-                  minDiff = diff;
+          for (let i = 0; i < emgTimeData.length; i++) {
+              if (emgTimeData[i] >= 0) { 
                   emgTrigIdx = i;
+                  break;
               }
           }
-      } else {
+      }
+      
+      // 終極備案：若無 Time 欄位，才退回頻率推算
+      if (emgTrigIdx === -1 || emgTrigIdx === 0) {
           emgTrigIdx = Math.round((kinTrigIdx / kinSR) * emgSR);
       }
 
@@ -1576,7 +1545,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         }
       }
       if (idxKinStart === -1) throw new Error(`找不到「開始舉手」點！(HTElevation 未超過基準閥值 ${startThreshold.toFixed(2)})`);
-      const absStart = timeAt(idxKinStart);
+      const tStart = (idxKinStart - kinTrigIdx) / kinSR;
 
       // 2. 尋找最小肩水平面 (MinPlane)
       let minPlaneVal1 = Infinity;
@@ -1588,10 +1557,10 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         }
       }
       if (idxKinMinPlane === -1) throw new Error("找不到「最小肩水平面角度」點！");
-      const absMinPlane = timeAt(idxKinMinPlane);
+      const tMinPlane = (idxKinMinPlane - kinTrigIdx) / kinSR;
 
-      // 3. 在精準校正時間的 Hand Course 中尋找擊球點 (Impact)
-      const handCourseStartSearchIdx = emgTrigIdx + Math.round((absMinPlane - trigTimeAbsolute) * emgSR);
+      // 3. 在 EMG/HandCourse 陣列中尋找擊球點 (Impact)
+      const handCourseStartSearchIdx = emgTrigIdx + Math.round(tMinPlane * emgSR);
       if (handCourseStartSearchIdx < 0 || handCourseStartSearchIdx >= emgHandCourseData.length) {
         throw new Error(`尋找擊球點失敗：時間超出 Hand Course 數據長度。`);
       }
@@ -1607,12 +1576,12 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         }
       }
       if (idxHandImpact === -1) throw new Error("找不到「擊球點」！請確認 Hand Course 訊號格式。");
-      const absImpact = emgTimeColIdx !== -1 ? emgFileResult[emgTimeColIdx][idxHandImpact] : (trigTimeAbsolute + (idxHandImpact - emgTrigIdx) / emgSR);
+      const tImpact = (idxHandImpact - emgTrigIdx) / emgSR;
 
       // 4. 尋找最大肩水平面 (MaxPlane)
-      const kinStartSearchMaxPlane = kinTrigIdx + Math.round((absImpact - trigTimeAbsolute) * kinSR); 
+      const kinStartSearchMaxPlane = kinTrigIdx + Math.round(tImpact * kinSR); 
       if (kinStartSearchMaxPlane >= kinHTPlaneData.length) {
-        throw new Error(`尋找最大肩水平面角度失敗：擊球點時間 (${absImpact.toFixed(2)}s) 超出 KIN 數據長度。`);
+        throw new Error(`尋找最大肩水平面角度失敗：擊球點時間 (${tImpact.toFixed(2)}s) 超出 KIN 數據長度。`);
       }
 
       let maxPlaneVal2 = -Infinity;
@@ -1626,13 +1595,13 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         }
       }
       if (idxKinMaxPlane === -1) throw new Error("找不到「最大肩水平面角度」點！");
-      const absMaxPlane = timeAt(idxKinMaxPlane);
+      const tMaxPlane = (idxKinMaxPlane - kinTrigIdx) / kinSR;
 
       const events = {
-        start: Number(absStart.toFixed(3)),
-        minPlane: Number(absMinPlane.toFixed(3)),
-        impact: Number(absImpact.toFixed(3)),
-        maxPlane: Number(absMaxPlane.toFixed(3)),
+        start: Number(tStart.toFixed(3)),
+        minPlane: Number(tMinPlane.toFixed(3)),
+        impact: Number(tImpact.toFixed(3)),
+        maxPlane: Number(tMaxPlane.toFixed(3)),
         startThreshold: startThreshold
       };
 
@@ -1646,26 +1615,25 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         const rectified = new Float64Array(filtered.length);
         for(let i = 0; i < filtered.length; i++) rectified[i] = Math.abs(filtered[i]);
         const windowSize = Math.max(1, Math.floor(emgSR * (rmsWindowMs / 1000)));
-        const rmsEnvelope = calculateRMS(rectified, windowSize); // 中心對齊移動窗口，本身即為 Zero-Lag
+        const rmsEnvelope = calculateRMS(rectified, windowSize);
 
         return { muscle, rmsEnvelope };
       });
 
-      const { emgMetricsList, kinMetricsData } = generateServeMetrics(events, emgDataArrays, kinFileResult, kinHeaders, kinTrigIdx, kinSR, emgSR, emgTrigIdx, trigTimeAbsolute, emgTimeColIdx, kinTimeColIdx);
+      const { emgMetricsList, kinMetricsData } = generateServeMetrics(events, emgDataArrays, kinFileResult, kinHeaders, kinTrigIdx, kinSR, emgSR, emgTrigIdx);
 
       const chartData = [];
       const drawKinStartIdx = 0; 
       const drawKinEndIdx = kinHTPlaneData.length - 1; 
 
       for (let i = drawKinStartIdx; i <= drawKinEndIdx; i++) {
-        const currentAbsTime = timeAt(i);
-        const relativeTime = currentAbsTime - trigTimeAbsolute;
+        const t = (i - kinTrigIdx) / kinSR; 
 
-        // 透過絕對物理時間精準對齊到 EMG 與 Hand Course 陣列
-        const matchingEmgIdx = emgTrigIdx + Math.round(relativeTime * emgSR);
+        // 透過相對時間 t 進行精準對齊
+        const matchingEmgIdx = emgTrigIdx + Math.round(t * emgSR);
         
         const dataPoint = {
-          time: Math.round(currentAbsTime * 1000) / 1000,
+          time: Math.round(t * 1000) / 1000,
           htElev: Math.round(kinHTElevData[i] * 100) / 100,
           htPlane: Math.round(kinHTPlaneData[i] * 100) / 100,
           handCourse: (matchingEmgIdx >= 0 && matchingEmgIdx < emgHandCourseData.length) ? Math.round(emgHandCourseData[matchingEmgIdx] * 100) / 100 : null
@@ -1686,10 +1654,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         kinMetricsData,
         emgDataArrays,
         kinTrigIdx,
-        emgTrigIdx,
-        trigTimeAbsolute,
-        emgTimeColIdx,
-        kinTimeColIdx
+        emgTrigIdx
       });
 
     } catch (err) {
@@ -1782,10 +1747,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         analysisResult.kinTrigIdx, 
         kinSR, 
         emgSR,
-        analysisResult.emgTrigIdx,
-        analysisResult.trigTimeAbsolute,
-        analysisResult.emgTimeColIdx,
-        analysisResult.kinTimeColIdx
+        analysisResult.emgTrigIdx
       );
 
       setAnalysisResult({
@@ -1958,7 +1920,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
                       <ReferenceArea x1={analysisResult.events.minPlane} x2={analysisResult.events.impact} fill="#fca5a5" fillOpacity={0.1} />
                       <ReferenceArea x1={analysisResult.events.impact} x2={analysisResult.events.maxPlane} fill="#bae6fd" fillOpacity={0.1} />
                       
-                      <ReferenceLine x={analysisResult.trigTimeAbsolute} stroke="#94a3b8" strokeWidth={1.5} label={{value:'Trigger', position:'insideBottomLeft', fill:'#94a3b8', fontSize:10}} />
+                      <ReferenceLine x={0} stroke="#94a3b8" strokeWidth={1.5} label={{value:'Trigger (t=0)', position:'insideBottomLeft', fill:'#94a3b8', fontSize:10}} />
                       <ReferenceLine x={analysisResult.events.start} stroke="#10b981" strokeDasharray="3 3" label={{value:'Start', position:'insideTopLeft', fill:'#10b981', fontSize:10}} style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.minPlane} stroke="#eab308" strokeDasharray="3 3" label={{value:'MinPlane', position:'insideTopLeft', fill:'#eab308', fontSize:10}} style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.impact} stroke="#ef4444" strokeWidth={2} label={{value:'Impact', position:'insideTopLeft', fill:'#ef4444', fontSize:10}} style={{ cursor: 'col-resize' }} />
@@ -1987,7 +1949,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
                       <ReferenceArea x1={analysisResult.events.minPlane} x2={analysisResult.events.impact} fill="#fca5a5" fillOpacity={0.1} />
                       <ReferenceArea x1={analysisResult.events.impact} x2={analysisResult.events.maxPlane} fill="#bae6fd" fillOpacity={0.1} />
 
-                      <ReferenceLine x={analysisResult.trigTimeAbsolute} stroke="#94a3b8" strokeWidth={1.5} />
+                      <ReferenceLine x={0} stroke="#94a3b8" strokeWidth={1.5} />
                       <ReferenceLine x={analysisResult.events.start} stroke="#10b981" strokeDasharray="3 3" style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.minPlane} stroke="#eab308" strokeDasharray="3 3" style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.impact} stroke="#ef4444" strokeWidth={2} style={{ cursor: 'col-resize' }} />
@@ -2019,7 +1981,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
                       <ReferenceArea x1={analysisResult.events.minPlane} x2={analysisResult.events.impact} fill="#fca5a5" fillOpacity={0.1} />
                       <ReferenceArea x1={analysisResult.events.impact} x2={analysisResult.events.maxPlane} fill="#bae6fd" fillOpacity={0.1} />
 
-                      <ReferenceLine x={analysisResult.trigTimeAbsolute} stroke="#94a3b8" strokeWidth={1.5} />
+                      <ReferenceLine x={0} stroke="#94a3b8" strokeWidth={1.5} />
                       <ReferenceLine x={analysisResult.events.start} stroke="#10b981" strokeDasharray="3 3" style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.minPlane} stroke="#eab308" strokeDasharray="3 3" style={{ cursor: 'col-resize' }} />
                       <ReferenceLine x={analysisResult.events.impact} stroke="#ef4444" strokeWidth={2} style={{ cursor: 'col-resize' }} />
