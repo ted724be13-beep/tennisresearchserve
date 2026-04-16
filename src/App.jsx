@@ -735,7 +735,7 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
   const LIFT_KIN_LIST = [
     { key: 'RScapUpDownRotation', search: 'rscapupdown' },
     { key: 'RScapAntPosTilt', search: 'rscapantpos' },
-    { key: 'RScapIntExtRotation', search: 'rscapinext' }
+    { key: 'RScapIntExtRotation', search: 'rscapintext' }
   ];
 
   const handleEmgUpload = (event) => {
@@ -765,10 +765,10 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
         setKinHeaders(finalHeaders);
         setKinFileResult(trimmedColumns);
         
-        const trigIdx = finalHeaders.findIndex(h => h.toLowerCase().includes('trigger') || h.toLowerCase().includes('trig'));
+        const trigIdx = finalHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z0-9]/g, '').includes('trigger') || h.toLowerCase().replace(/[^a-z0-9]/g, '').includes('trig'));
         if (trigIdx !== -1) setKinTrigColIdx(trigIdx);
 
-        const rhtIdx = finalHeaders.findIndex(h => h.replace(/[^a-zA-Z]/g, '').toLowerCase().includes('rhtelevation'));
+        const rhtIdx = finalHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z0-9]/g, '').includes('rhtelevation'));
         if (rhtIdx !== -1) setKinAngleColIdx(rhtIdx);
 
         setErrorMessage(null);
@@ -946,7 +946,7 @@ const LiftingAnalysis = ({ onBack, taskLiftEmgData, setTaskLiftEmgData, taskLift
     });
 
     const kinDataArrays = LIFT_KIN_LIST.map(item => {
-      const colIdx = kinHeaders.findIndex(h => h.toLowerCase().replace(/\s+/g, '').includes(item.search));
+      const colIdx = kinHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z0-9]/g, '').includes(item.search.toLowerCase().replace(/[^a-z0-9]/g, '')));
       const dataRaw = colIdx !== -1 ? kinFileResult[colIdx] : null;
       const data = dataRaw ? removeSpikes(dataRaw, kinSpikeThresh) : null;
       return { field: item.key, data };
@@ -1398,7 +1398,7 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
         setKinHeaders(finalHeaders);
         setKinFileResult(trimmedColumns);
         
-        const findCol = (keyword) => finalHeaders.findIndex(h => h.toLowerCase().replace(/\s+/g, '').includes(keyword.toLowerCase()));
+        const findCol = (keyword) => finalHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z0-9]/g, '').includes(keyword.toLowerCase().replace(/[^a-z0-9]/g, '')));
         const guessHTElev = findCol('htelevation');
         const guessHTPlane = findCol('htplaneofelev');
         const guessTrig = findCol('trigger');
@@ -1460,7 +1460,8 @@ const TennisServeAnalysis = ({ onBack, taskTennisServeData, setTaskTennisServeDa
     };
 
     const kinMetricsData = KIN_METRICS_LIST.map(field => {
-      const colIdx = localKinHeaders.findIndex(h => h.toLowerCase().replace(/\s+/g, '').includes(field.toLowerCase()));
+      const searchStr = field.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const colIdx = localKinHeaders.findIndex(h => h.toLowerCase().replace(/[^a-z0-9]/g, '').includes(searchStr));
       if (colIdx === -1) {
         return { field, start: '-', minPlane: '-', impact: '-', maxPlane: '-' };
       }
